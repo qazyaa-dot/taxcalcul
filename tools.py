@@ -51,7 +51,11 @@ TOOLS: list[dict[str, Any]] = [
                 "birth_date": {"type": "string", "description": "생년월일 YYYY-MM-DD"},
                 "age": {"type": "integer", "description": "만 나이. 생년월일을 모를 때"},
                 "houses": {"type": "array", "items": _HOUSE_SCHEMA},
-                "is_one_house_household": {"type": "boolean", "description": "세대 전체가 1주택인지 사용자가 명시한 경우만"},
+                "one_house_household": {
+                    "type": "string", "enum": ["auto", "yes", "no"],
+                    "description": ("1세대1주택 판정. 기본은 auto(입력한 주택 수로 자동 판정). 사용자가 "
+                                    "'세대원이 다른 주택을 보유'처럼 명시했을 때만 no, 명시적으로 세대 전체 1주택이라고 할 때만 yes"),
+                },
                 "prev_property_tax": {**_AMOUNT, "description": "전년도 재산세(본세+도시지역분)"},
                 "prev_comprehensive_tax": {**_AMOUNT, "description": "전년도 종부세"},
             },
@@ -133,6 +137,13 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
     },
 ]
+
+
+def openai_tools() -> list[dict[str, Any]]:
+    """TOOLS(name/description/input_schema)를 OpenAI Chat Completions 함수 호출 형식으로 변환."""
+    return [{"type": "function",
+             "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+            for t in TOOLS]
 
 
 class ToolError(Exception):
@@ -244,7 +255,7 @@ class ToolExecutor:
 
         data = {
             "birth_date": birth, "houses": houses,
-            "is_one_house_household": args.get("is_one_house_household"),
+            "is_one_house_household": {"yes": True, "no": False}.get(str(args.get("one_house_household", "auto"))),
             "prev_property_tax": self._amount(args.get("prev_property_tax")),
             "prev_comprehensive_tax": self._amount(args.get("prev_comprehensive_tax")),
         }

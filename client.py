@@ -1,6 +1,7 @@
-"""Claude API Tool Use 루프 (FR-AI-01~06). 계산은 도구가, 해설은 Claude가 맡는다."""
+"""OpenAI Chat Completions 도구 호출 루프 (FR-AI-01~06). 계산은 도구가, 해설은 모델이 맡는다."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -10,29 +11,38 @@ from engine.models import TaxpayerInput
 
 from .guard import GuardReport, check
 from .prompts import CONFIRMED_MESSAGE, GUARD_RETRY_MESSAGE, SYSTEM_PROMPT
-from .tools import TOOLS, ToolExecutor
+from .tools import ToolExecutor, openai_tools
 
 logger = logging.getLogger("tax_agent")
 
-MODEL = "claude-sonnet-5-5"
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+DEFAULT_MODEL = "gpt-5.4-mini"
 MAX_TOOL_ROUNDS = 8
 GUARD_FAILED_TEXT = ("AI 해설의 금액이 계산 결과와 일치하지 않아 해설을 표시하지 않습니다. "
                      "위의 계산 결과 표와 계산 근거를 확인해 주세요.")
+REFUSAL_TEXT = "이 요청에는 답변할 수 없습니다. 보유세 계산과 관련된 질문을 해 주세요."
 
 
 class AgentUnavailable(RuntimeError):
     """API 키가 없거나 SDK를 쓸 수 없음."""
 
 
-def api_key_available() -> bool:
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return True
+def _secret(name: str) -> str | None:
+    """환경변수(.env 포함) → Streamlit secrets 순으로 조회."""
+    if os.environ.get(name):
+        return os.environ[name]
     try:
         import streamlit as st
-        return bool(st.secrets.get("ANTHROPIC_API_KEY"))
+        return st.secrets.get(name) or None
     except Exception:
-        return False
+        return None
+
+
+def api_key_available() -> bool:
+    return bool(_secret("OPENAI_API_KEY"))
+
+
+def configured_model() -> str:
+    return _secret("OPENAI_MODEL") or DEFAULT_MODEL
 
 
 @dataclass
@@ -49,23 +59,20 @@ class AgentReply:
 class TaxAgent:
     """대화 이력과 도구 실행기를 가진 상담 에이전트."""
 
-    def __init__(self, client: Any = None, model: str = MODEL, executor: ToolExecutor | None = None):
+    def __init__(self, client: Any = None, model: str | None = None, executor: ToolExecutor | None = None):
         self._client = client
-        self.model = model
+        self.model = model or configured_model()
         self.executor = executor or ToolExecutor()
-        self.messages: list[dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     @property
     def client(self) -> Any:
         if self._client is None:
-            if not api_key_available():
-                raise AgentUnavailable("ANTHROPIC_API_KEY가 설정되지 않았습니다")
-            import anthropic
-            key = os.environ.get("ANTHROPIC_API_KEY")
+            key = _secret("OPENAI_API_KEY")
             if not key:
-                import streamlit as st
-                key = st.secrets["ANTHROPIC_API_KEY"]
-            self._client = anthropic.Anthropic(api_key=key)
+                raise AgentUnavailable("OPENAI_API_KEY가 설정되지 않았습니다")
+            from openai import OpenAI
+            self._client = OpenAI(api_key=key)
         return self._client
 
     # ---- 공개 API ----
@@ -82,12 +89,12 @@ class TaxAgent:
             self.messages.pop()
             return AgentReply(text="", error=str(e))
         except Exception as e:  # SDK 오류는 화면에 안내하고 앱은 계속 동작
-            logger.exception("Claude API 호출 실패")
+            logger.exception("OpenAI API 호출 실패")
             return AgentReply(text="", error=f"AI 응답을 받지 못했습니다: {type(e).__name__}: {e}")
 
         reply = AgentReply(text=text, tool_calls=calls, pending_input=self.executor.pending_input)
         if stop == "refusal":
-            reply.text = text or "이 요청에는 답변할 수 없습니다. 보유세 계산과 관련된 질문을 해 주세요."
+            reply.text = text or REFUSAL_TEXT
             return reply
 
         report = check(text, self.executor.known_numbers)
@@ -111,39 +118,51 @@ class TaxAgent:
 
     # ---- 내부 ----
     def _create(self) -> Any:
-        return self.client.beta.messages.create(
+        return self.client.chat.completions.create(
             model=self.model,
-            max_tokens=16000,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
             messages=self.messages,
-            output_config={"effort": "medium"},
-            betas=[FALLBACK_BETA],
-            fallbacks="default",
+            tools=openai_tools(),
+            tool_choice="auto",
         )
 
     def _run_loop(self) -> tuple[str, list[dict[str, Any]], str]:
-        """도구 호출이 끝날 때까지 반복하고 (최종 텍스트, 도구 호출 기록, stop_reason)을 반환."""
+        """도구 호출이 끝날 때까지 반복하고 (최종 텍스트, 도구 호출 기록, 종료 사유)를 반환."""
         calls: list[dict[str, Any]] = []
         for _ in range(MAX_TOOL_ROUNDS):
-            response = self._create()
-            # 응답 블록(thinking·fallback 포함)을 그대로 이력에 보존
-            self.messages.append({"role": "assistant", "content": response.content})
-            stop = response.stop_reason
-            if stop == "pause_turn":
-                continue
-            tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
-            if stop != "tool_use" or not tool_uses:
-                text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-                if stop == "max_tokens":
+            choice = self._create().choices[0]
+            msg = choice.message
+            tool_calls = list(getattr(msg, "tool_calls", None) or [])
+
+            if getattr(msg, "refusal", None):
+                self.messages.append({"role": "assistant", "content": msg.refusal})
+                return msg.refusal, calls, "refusal"
+            if choice.finish_reason == "content_filter":
+                return "", calls, "refusal"
+
+            assistant: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+            if tool_calls:
+                assistant["tool_calls"] = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls]
+            self.messages.append(assistant)
+
+            if not tool_calls:
+                text = (msg.content or "").strip()
+                if choice.finish_reason == "length":
                     text += "\n\n(응답이 길어 중간에 잘렸습니다.)"
-                return text, calls, stop
-            results = []
-            for block in tool_uses:
-                output, is_error = self.executor.execute(block.name, block.input)
-                calls.append({"name": block.name, "input": block.input, "is_error": is_error})
-                logger.info("tool %s error=%s", block.name, is_error)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": output,
-                                **({"is_error": True} if is_error else {})})
-            self.messages.append({"role": "user", "content": results})
+                return text, calls, choice.finish_reason or "stop"
+
+            # 모든 도구 결과를 같은 순서로 돌려준다
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    output, is_error, args = json.dumps({"error": "도구 인자가 올바른 JSON이 아닙니다"},
+                                                        ensure_ascii=False), True, {}
+                else:
+                    output, is_error = self.executor.execute(tc.function.name, args)
+                calls.append({"name": tc.function.name, "input": args, "is_error": is_error})
+                logger.info("tool %s error=%s", tc.function.name, is_error)
+                self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
         return "도구 호출 횟수가 너무 많아 응답을 마치지 못했습니다. 질문을 나눠서 해 주세요.", calls, "max_rounds"

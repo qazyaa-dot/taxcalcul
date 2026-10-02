@@ -9,7 +9,7 @@ import streamlit as st
 from engine.models import TaxResult
 
 from .export import to_csv_bytes, to_pdf_bytes
-from .format import approx, pct, won, won_full
+from .format import approx, fix_korean_markdown, pct, won, won_full
 
 
 def _kpi(label: str, value: int, sub: str, cls: str = "") -> str:
@@ -96,7 +96,7 @@ def render_steps(result: TaxResult, key: str) -> None:
 def render_ai_box(ai_text: str | None, ai_available: bool) -> None:
     st.markdown("**🤖 AI 해설**")
     if ai_text:
-        st.markdown(ai_text)
+        st.markdown(fix_korean_markdown(ai_text))
     elif ai_available:
         st.markdown('<div class="ai-box">AI 상담 탭에서 이 결과에 대해 질문할 수 있습니다.</div>', unsafe_allow_html=True)
     else:

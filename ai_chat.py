@@ -11,7 +11,8 @@ from engine.models import House, TaxpayerInput
 from engine.utils import parse_korean_amount
 
 from . import fields
-from .format import won
+from .format import fix_korean_markdown, won
+from .input_form import ONE_HOUSE_OPTIONS
 from .result_view import render_result
 
 EXAMPLES = [
@@ -29,7 +30,7 @@ def render_unavailable() -> None:
             "- 예: *“서울 아파트 2채, 공시가 10억·7억, 15년 보유, 만 66세”*\n"
             "- 계산은 항상 시뮬레이터 엔진이 하고, AI는 설명만 합니다.\n"
             "- AI가 말한 금액은 계산 결과와 자동으로 대조합니다.")
-        st.info("AI 상담을 쓰려면 `.env`에 `ANTHROPIC_API_KEY`를 설정하세요. "
+        st.info("AI 상담을 쓰려면 `.env`에 `OPENAI_API_KEY`를 설정하세요. "
                 "간편 계산과 시나리오 비교는 키 없이 사용할 수 있습니다.", icon=":material/key:")
         st.markdown("**이런 질문을 할 수 있어요**")
         for ex in EXAMPLES:
@@ -45,8 +46,13 @@ def _confirm_card(agent: TaxAgent, pending: TaxpayerInput) -> None:
     with st.container(border=True):
         st.markdown("**📝 입력 확인** — AI가 정리한 내용입니다. 틀린 곳을 고친 뒤 계산하세요.")
         with st.form(f"confirm_form_{ver}", border=False):
-            birth = st.date_input("생년월일", value=pending.birth_date, min_value=fields.WIDE_MIN_DATE,
+            b1, b2 = st.columns(2)
+            birth = b1.date_input("생년월일", value=pending.birth_date, min_value=fields.WIDE_MIN_DATE,
                                   max_value=fields.WIDE_MAX_DATE, format="YYYY-MM-DD", key=f"cf_{ver}_birth")
+            one_house_labels = list(ONE_HOUSE_OPTIONS)
+            one_house = b2.selectbox(
+                "1세대1주택 여부", one_house_labels, key=f"cf_{ver}_one_house",
+                index=list(ONE_HOUSE_OPTIONS.values()).index(pending.is_one_house_household))
             edited = []
             for i, h in enumerate(pending.houses):
                 st.markdown(f"**주택 {i + 1}**")
@@ -78,6 +84,7 @@ def _confirm_card(agent: TaxAgent, pending: TaxpayerInput) -> None:
                     "acquired_date": acquired, "ownership_ratio": ratio / 100, "is_urban_area": urban})
                     for h, name, price, market, acquired, ratio, urban in edited]
                 inp = TaxpayerInput(**{**pending.model_dump(), "birth_date": birth,
+                                       "is_one_house_household": ONE_HOUSE_OPTIONS[one_house],
                                        "houses": [House(**hh.model_dump()) for hh in houses]})
             except (ValidationError, ValueError) as e:
                 st.error(f"입력 오류: {e}")
@@ -108,7 +115,7 @@ def render_ai_tab(agent: TaxAgent) -> None:
 
     for msg in ss.chat:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            st.markdown(fix_korean_markdown(msg["content"]))
 
     if agent.executor.pending_input is not None:
         _confirm_card(agent, agent.executor.pending_input)

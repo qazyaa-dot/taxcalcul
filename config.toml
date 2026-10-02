@@ -1,0 +1,14 @@
+# 라이트·다크 테마를 따로 지정해야 시스템 설정(prefers-color-scheme)을 따라간다.
+[theme.light]
+primaryColor = "#1E40AF"
+baseRadius = "0.6rem"
+
+[theme.dark]
+primaryColor = "#3B82F6"
+baseRadius = "0.6rem"
+
+[server]
+runOnSave = false
+
+[browser]
+gatherUsageStats = false

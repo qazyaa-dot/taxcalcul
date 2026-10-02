@@ -1,6 +1,8 @@
 """화면 금액·비율 표기 통일."""
 from __future__ import annotations
 
+import re
+
 
 def won(n: int) -> str:
     """1234560 → '1,234,560원'."""
@@ -32,6 +34,15 @@ def signed_won(n: int) -> str:
     if n < 0:
         return f"−{abs(n):,}원"
     return "0원"
+
+
+_BOLD_BRACKET = re.compile(r"\*\*([\[(「『])([^*\n]+?)([\])」』])\*\*")
+
+
+def fix_korean_markdown(text: str) -> str:
+    """'**[버튼]**을'처럼 괄호로 끝나는 굵게 표시 뒤에 조사가 붙으면 마크다운이 깨지므로
+    괄호를 굵게 표시 밖으로 옮긴다 → '[**버튼**]을'."""
+    return _BOLD_BRACKET.sub(r"\1**\2**\3", text)
 
 
 def pct(rate: float, digits: int = 2) -> str:

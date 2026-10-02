@@ -1,5 +1,6 @@
 """주택 보유세 시뮬레이터 (2026년 귀속) — Streamlit 진입점."""
 import logging
+from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -14,7 +15,11 @@ from ui.result_view import render_result
 from ui.scenario_view import render_scenario_tab
 from ui.theme import inject_css
 
-load_dotenv()
+# .env는 앱 폴더 → 상위 폴더 순으로 찾는다 (이미 설정된 환경변수는 덮어쓰지 않음)
+for _env in (Path(__file__).with_name(".env"), Path(__file__).resolve().parent.parent / ".env"):
+    if _env.exists():
+        load_dotenv(_env)
+        break
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("fontTools").setLevel(logging.WARNING)  # PDF 폰트 서브셋 로그 억제
 

@@ -79,9 +79,9 @@ def collect_numbers(obj: Any, out: set[int] | None = None) -> set[int]:
     if isinstance(obj, bool):
         return out
     if isinstance(obj, int):
-        out.add(obj)
+        out.add(abs(obj))  # 차액(diff_*)은 음수로 오지만 답변에서는 "N원 감소"처럼 양수로 쓴다
     elif isinstance(obj, float) and obj.is_integer():
-        out.add(int(obj))
+        out.add(abs(int(obj)))
     elif isinstance(obj, dict):
         for v in obj.values():
             collect_numbers(v, out)
