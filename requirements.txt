@@ -1,0 +1,8 @@
+streamlit>=1.40
+pydantic>=2
+pandas
+plotly
+anthropic>=1.0
+python-dotenv
+fpdf2>=2.7
+pytest
